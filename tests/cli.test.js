@@ -25,3 +25,8 @@ test('CLI commands drive normal, VIP and bot actions', () => {
   assert.deepEqual(state.pending.map((o) => o.id), [1]);
   assert.ok(output.length >= 3);
 });
+
+test('timestamp output uses HH:MM:SS format', () => {
+  const { timestamp } = require('../src/cli');
+  assert.equal(timestamp(new Date('2026-09-09T12:34:56Z')), '12:34:56');
+});
