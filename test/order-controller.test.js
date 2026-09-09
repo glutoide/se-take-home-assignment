@@ -32,3 +32,66 @@ test('VIP orders queue before normal orders while preserving FIFO within priorit
     [4, 'NORMAL'],
   ]);
 });
+
+function createFakeScheduler() {
+  let now = 0;
+  let nextId = 1;
+  const tasks = new Map();
+
+  return {
+    setTimeout(fn, delay) {
+      const id = nextId++;
+      tasks.set(id, { at: now + delay, fn });
+      return id;
+    },
+    clearTimeout(id) {
+      tasks.delete(id);
+    },
+    advance(ms) {
+      const target = now + ms;
+      while (true) {
+        const due = [...tasks.entries()]
+          .filter(([, task]) => task.at <= target)
+          .sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+        if (!due) break;
+        const [id, task] = due;
+        tasks.delete(id);
+        now = task.at;
+        task.fn();
+      }
+      now = target;
+    },
+  };
+}
+
+test('a bot processes one order at a time, completes after 10 seconds, then becomes idle', () => {
+  const scheduler = createFakeScheduler();
+  const controller = new controllerModule.OrderController({
+    setTimeoutFn: scheduler.setTimeout,
+    clearTimeoutFn: scheduler.clearTimeout,
+  });
+
+  controller.addOrder('NORMAL');
+  controller.addOrder('NORMAL');
+  controller.addBot();
+
+  let state = controller.getState();
+  assert.deepEqual(state.pending.map((order) => order.number), [2]);
+  assert.equal(state.bots[0].status, 'PROCESSING');
+  assert.equal(state.bots[0].orderNumber, 1);
+
+  scheduler.advance(9_999);
+  assert.equal(controller.getState().complete.length, 0);
+
+  scheduler.advance(1);
+  state = controller.getState();
+  assert.deepEqual(state.complete.map((order) => order.number), [1]);
+  assert.equal(state.bots[0].status, 'PROCESSING');
+  assert.equal(state.bots[0].orderNumber, 2);
+
+  scheduler.advance(10_000);
+  state = controller.getState();
+  assert.deepEqual(state.complete.map((order) => order.number), [1, 2]);
+  assert.equal(state.bots[0].status, 'IDLE');
+  assert.equal(state.bots[0].orderNumber, null);
+});
