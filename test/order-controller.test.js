@@ -16,3 +16,19 @@ test('a normal order enters the pending queue', () => {
   ]);
   assert.equal(state.complete.length, 0);
 });
+
+test('VIP orders queue before normal orders while preserving FIFO within priority', () => {
+  const controller = new controllerModule.OrderController();
+
+  controller.addOrder('NORMAL'); // #1
+  controller.addOrder('VIP');    // #2
+  controller.addOrder('VIP');    // #3
+  controller.addOrder('NORMAL'); // #4
+
+  assert.deepEqual(controller.getState().pending.map(({ number, type }) => [number, type]), [
+    [2, 'VIP'],
+    [3, 'VIP'],
+    [1, 'NORMAL'],
+    [4, 'NORMAL'],
+  ]);
+});
