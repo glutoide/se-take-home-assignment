@@ -95,3 +95,40 @@ test('a bot processes one order at a time, completes after 10 seconds, then beco
   assert.equal(state.bots[0].status, 'IDLE');
   assert.equal(state.bots[0].orderNumber, null);
 });
+
+test('removing the newest bot cancels its work and returns the order to its priority position', () => {
+  const scheduler = createFakeScheduler();
+  const controller = new controllerModule.OrderController({
+    setTimeoutFn: scheduler.setTimeout,
+    clearTimeoutFn: scheduler.clearTimeout,
+  });
+
+  controller.addOrder('NORMAL'); // #1
+  controller.addOrder('VIP');    // #2
+  controller.addOrder('NORMAL'); // #3
+  controller.addOrder('VIP');    // #4
+  controller.addBot();           // bot #1 -> order #2
+  controller.addBot();           // bot #2 -> order #4
+  controller.addOrder('VIP');    // #5 pending
+
+  const removedBotId = controller.removeBot();
+  let state = controller.getState();
+
+  assert.equal(removedBotId, 2);
+  assert.deepEqual(state.bots.map((bot) => bot.id), [1]);
+  assert.deepEqual(state.pending.map(({ number, type }) => [number, type]), [
+    [4, 'VIP'],
+    [5, 'VIP'],
+    [1, 'NORMAL'],
+    [3, 'NORMAL'],
+  ]);
+
+  scheduler.advance(10_000);
+  state = controller.getState();
+  assert.deepEqual(state.complete.map((order) => order.number), [2]);
+  assert.equal(state.bots[0].orderNumber, 4);
+
+  scheduler.advance(10_000);
+  state = controller.getState();
+  assert.deepEqual(state.complete.map((order) => order.number), [2, 4]);
+});
