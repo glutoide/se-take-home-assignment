@@ -1,134 +1,161 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { OrderController } from '../src/order-controller.js';
 
-const controllerModule = await import('../src/order-controller.js').catch(() => null);
+class FakeScheduler {
+  constructor() {
+    this.now = 0;
+    this.nextId = 1;
+    this.tasks = new Map();
+  }
 
-test('a normal order enters the pending queue', () => {
-  assert.ok(controllerModule?.OrderController, 'OrderController should be implemented');
+  setTimeout(fn, delay) {
+    const id = this.nextId++;
+    this.tasks.set(id, { at: this.now + delay, fn });
+    return id;
+  }
 
-  const controller = new controllerModule.OrderController();
-  const order = controller.addOrder('NORMAL');
-  const state = controller.getState();
+  clearTimeout(id) {
+    this.tasks.delete(id);
+  }
 
-  assert.equal(order.number, 1);
-  assert.deepEqual(state.pending.map(({ number, type }) => ({ number, type })), [
-    { number: 1, type: 'NORMAL' },
-  ]);
-  assert.equal(state.complete.length, 0);
+  advance(ms) {
+    const target = this.now + ms;
+    while (true) {
+      const due = [...this.tasks.entries()]
+        .filter(([, task]) => task.at <= target)
+        .sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+      if (!due) break;
+      const [id, task] = due;
+      this.tasks.delete(id);
+      this.now = task.at;
+      task.fn();
+    }
+    this.now = target;
+  }
+}
+
+function makeController() {
+  const scheduler = new FakeScheduler();
+  const controller = new OrderController({
+    processTimeMs: 10_000,
+    setTimeoutFn: scheduler.setTimeout.bind(scheduler),
+    clearTimeoutFn: scheduler.clearTimeout.bind(scheduler),
+  });
+  return { controller, scheduler };
+}
+
+test('normal orders enter PENDING in FIFO order with increasing unique numbers', () => {
+  const { controller } = makeController();
+  const first = controller.addOrder('NORMAL');
+  const second = controller.addOrder('NORMAL');
+
+  assert.equal(first.number, 1);
+  assert.equal(second.number, 2);
+  assert.deepEqual(controller.getState().pending.map((order) => order.number), [1, 2]);
 });
 
 test('VIP orders queue before normal orders while preserving FIFO within priority', () => {
-  const controller = new controllerModule.OrderController();
+  const { controller } = makeController();
+  controller.addOrder('NORMAL');
+  controller.addOrder('VIP');
+  controller.addOrder('NORMAL');
+  controller.addOrder('VIP');
 
-  controller.addOrder('NORMAL'); // #1
-  controller.addOrder('VIP');    // #2
-  controller.addOrder('VIP');    // #3
-  controller.addOrder('NORMAL'); // #4
-
-  assert.deepEqual(controller.getState().pending.map(({ number, type }) => [number, type]), [
-    [2, 'VIP'],
-    [3, 'VIP'],
-    [1, 'NORMAL'],
-    [4, 'NORMAL'],
-  ]);
+  assert.deepEqual(controller.getState().pending.map((order) => order.number), [2, 4, 1, 3]);
 });
 
-function createFakeScheduler() {
-  let now = 0;
-  let nextId = 1;
-  const tasks = new Map();
+test('adding a bot immediately starts the highest-priority pending order', () => {
+  const { controller } = makeController();
+  controller.addOrder('NORMAL');
+  controller.addOrder('VIP');
+  controller.addBot();
 
-  return {
-    setTimeout(fn, delay) {
-      const id = nextId++;
-      tasks.set(id, { at: now + delay, fn });
-      return id;
-    },
-    clearTimeout(id) {
-      tasks.delete(id);
-    },
-    advance(ms) {
-      const target = now + ms;
-      while (true) {
-        const due = [...tasks.entries()]
-          .filter(([, task]) => task.at <= target)
-          .sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
-        if (!due) break;
-        const [id, task] = due;
-        tasks.delete(id);
-        now = task.at;
-        task.fn();
-      }
-      now = target;
-    },
-  };
-}
+  const state = controller.getState();
+  assert.deepEqual(state.pending.map((order) => order.number), [1]);
+  assert.equal(state.bots[0].status, 'BUSY');
+  assert.equal(state.bots[0].order.number, 2);
+});
 
-test('a bot processes one order at a time, completes after 10 seconds, then becomes idle', () => {
-  const scheduler = createFakeScheduler();
-  const controller = new controllerModule.OrderController({
-    setTimeoutFn: scheduler.setTimeout,
-    clearTimeoutFn: scheduler.clearTimeout,
-  });
-
+test('a bot completes an order after exactly 10 seconds and takes the next order', () => {
+  const { controller, scheduler } = makeController();
   controller.addOrder('NORMAL');
   controller.addOrder('NORMAL');
   controller.addBot();
-
-  let state = controller.getState();
-  assert.deepEqual(state.pending.map((order) => order.number), [2]);
-  assert.equal(state.bots[0].status, 'PROCESSING');
-  assert.equal(state.bots[0].orderNumber, 1);
 
   scheduler.advance(9_999);
   assert.equal(controller.getState().complete.length, 0);
 
   scheduler.advance(1);
-  state = controller.getState();
+  let state = controller.getState();
   assert.deepEqual(state.complete.map((order) => order.number), [1]);
-  assert.equal(state.bots[0].status, 'PROCESSING');
-  assert.equal(state.bots[0].orderNumber, 2);
+  assert.equal(state.bots[0].order.number, 2);
 
   scheduler.advance(10_000);
   state = controller.getState();
   assert.deepEqual(state.complete.map((order) => order.number), [1, 2]);
   assert.equal(state.bots[0].status, 'IDLE');
-  assert.equal(state.bots[0].orderNumber, null);
 });
 
-test('removing the newest bot cancels its work and returns the order to its priority position', () => {
-  const scheduler = createFakeScheduler();
-  const controller = new controllerModule.OrderController({
-    setTimeoutFn: scheduler.setTimeout,
-    clearTimeoutFn: scheduler.clearTimeout,
-  });
+test('an idle bot immediately takes an order that arrives later', () => {
+  const { controller } = makeController();
+  controller.addBot();
+  controller.addOrder('VIP');
 
+  const state = controller.getState();
+  assert.equal(state.bots[0].status, 'BUSY');
+  assert.equal(state.bots[0].order.number, 1);
+});
+
+test('multiple bots process different orders in parallel', () => {
+  const { controller, scheduler } = makeController();
+  controller.addOrder('NORMAL');
+  controller.addOrder('NORMAL');
+  controller.addBot();
+  controller.addBot();
+
+  assert.deepEqual(controller.getState().bots.map((bot) => bot.order?.number), [1, 2]);
+  scheduler.advance(10_000);
+  assert.deepEqual(controller.getState().complete.map((order) => order.number), [1, 2]);
+});
+
+test('removing a bot destroys the newest bot', () => {
+  const { controller } = makeController();
+  controller.addBot();
+  controller.addBot();
+  controller.addBot();
+
+  const removed = controller.removeBot();
+  assert.equal(removed.id, 3);
+  assert.deepEqual(controller.getState().bots.map((bot) => bot.id), [1, 2]);
+});
+
+test('removing a busy newest bot returns its order to the correct priority position', () => {
+  const { controller, scheduler } = makeController();
   controller.addOrder('NORMAL'); // #1
   controller.addOrder('VIP');    // #2
-  controller.addOrder('NORMAL'); // #3
-  controller.addOrder('VIP');    // #4
-  controller.addBot();           // bot #1 -> order #2
-  controller.addBot();           // bot #2 -> order #4
-  controller.addOrder('VIP');    // #5 pending
+  controller.addOrder('VIP');    // #3
+  controller.addBot();           // bot 1 -> #2
+  controller.addBot();           // bot 2 -> #3
 
-  const removedBotId = controller.removeBot();
-  let state = controller.getState();
-
-  assert.equal(removedBotId, 2);
-  assert.deepEqual(state.bots.map((bot) => bot.id), [1]);
-  assert.deepEqual(state.pending.map(({ number, type }) => [number, type]), [
-    [4, 'VIP'],
-    [5, 'VIP'],
-    [1, 'NORMAL'],
-    [3, 'NORMAL'],
-  ]);
+  controller.removeBot();
+  assert.deepEqual(controller.getState().pending.map((order) => order.number), [3, 1]);
+  assert.equal(controller.getState().bots[0].order.number, 2);
 
   scheduler.advance(10_000);
-  state = controller.getState();
+  const state = controller.getState();
   assert.deepEqual(state.complete.map((order) => order.number), [2]);
-  assert.equal(state.bots[0].orderNumber, 4);
+  assert.equal(state.bots[0].order.number, 3);
+});
 
-  scheduler.advance(10_000);
-  state = controller.getState();
-  assert.deepEqual(state.complete.map((order) => order.number), [2, 4]);
+test('a cancelled timer cannot complete an order after its bot is removed', () => {
+  const { controller, scheduler } = makeController();
+  controller.addOrder('NORMAL');
+  controller.addBot();
+  controller.removeBot();
+
+  scheduler.advance(20_000);
+  const state = controller.getState();
+  assert.equal(state.complete.length, 0);
+  assert.deepEqual(state.pending.map((order) => order.number), [1]);
 });

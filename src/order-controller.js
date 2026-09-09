@@ -4,24 +4,35 @@ export class OrderController {
   #pending = [];
   #complete = [];
   #bots = [];
-  #processingMs;
-  #setTimeoutFn;
-  #clearTimeoutFn;
 
-  constructor({ processingMs = 10_000, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
-    this.#processingMs = processingMs;
-    this.#setTimeoutFn = setTimeoutFn;
-    this.#clearTimeoutFn = clearTimeoutFn;
+  constructor({
+    processTimeMs = 10_000,
+    setTimeoutFn = setTimeout,
+    clearTimeoutFn = clearTimeout,
+    onEvent = () => {},
+  } = {}) {
+    this.processTimeMs = processTimeMs;
+    this.setTimeoutFn = setTimeoutFn;
+    this.clearTimeoutFn = clearTimeoutFn;
+    this.onEvent = onEvent;
   }
 
   addOrder(type) {
+    const normalizedType = String(type).toUpperCase();
+    if (!['NORMAL', 'VIP'].includes(normalizedType)) {
+      throw new Error('Order type must be NORMAL or VIP');
+    }
+
     const order = {
       number: this.#nextOrderNumber++,
-      type,
+      type: normalizedType,
       status: 'PENDING',
     };
-    this.#insertPending(order);
-    this.#dispatchIdleBots();
+
+    this.#pending.push(order);
+    this.#sortPending();
+    this.onEvent({ type: 'ORDER_CREATED', order: { ...order } });
+    this.#dispatch();
     return { ...order };
   }
 
@@ -30,74 +41,104 @@ export class OrderController {
       id: this.#nextBotId++,
       status: 'IDLE',
       order: null,
-      timerId: null,
+      timer: null,
     };
+
     this.#bots.push(bot);
-    this.#dispatchIdleBots();
-    return bot.id;
+    this.onEvent({ type: 'BOT_ADDED', botId: bot.id });
+    this.#dispatch();
+    return this.#publicBot(bot);
   }
 
   removeBot() {
+    if (this.#bots.length === 0) return null;
+
     const bot = this.#bots.pop();
-    if (!bot) return null;
-
-    if (bot.status === 'PROCESSING' && bot.order) {
-      if (bot.timerId !== null) this.#clearTimeoutFn(bot.timerId);
-      bot.order.status = 'PENDING';
-      this.#insertPending(bot.order);
+    if (bot.timer !== null) {
+      this.clearTimeoutFn(bot.timer);
+      bot.timer = null;
     }
 
-    this.#dispatchIdleBots();
-    return bot.id;
-  }
-
-  #dispatchIdleBots() {
-    for (const bot of this.#bots) {
-      if (bot.status !== 'IDLE' || this.#pending.length === 0) continue;
-
-      const order = this.#pending.shift();
-      order.status = 'PROCESSING';
-      bot.status = 'PROCESSING';
-      bot.order = order;
-      bot.timerId = this.#setTimeoutFn(
-        () => this.#finishOrder(bot.id, order.number),
-        this.#processingMs,
-      );
+    if (bot.order) {
+      const interruptedOrder = { ...bot.order, status: 'PENDING' };
+      this.#pending.push(interruptedOrder);
+      this.#sortPending();
+      this.onEvent({
+        type: 'ORDER_RETURNED',
+        order: { ...interruptedOrder },
+        botId: bot.id,
+      });
     }
-  }
 
-  #finishOrder(botId, orderNumber) {
-    const bot = this.#bots.find((candidate) => candidate.id === botId);
-    if (!bot || bot.status !== 'PROCESSING' || bot.order?.number !== orderNumber) return;
-
-    const order = bot.order;
-    order.status = 'COMPLETE';
-    this.#complete.push(order);
-    bot.status = 'IDLE';
-    bot.order = null;
-    bot.timerId = null;
-    this.#dispatchIdleBots();
-  }
-
-  #insertPending(order) {
-    const priority = order.type === 'VIP' ? 0 : 1;
-    const index = this.#pending.findIndex((queued) => {
-      const queuedPriority = queued.type === 'VIP' ? 0 : 1;
-      return queuedPriority > priority || (queuedPriority === priority && queued.number > order.number);
-    });
-    if (index === -1) this.#pending.push(order);
-    else this.#pending.splice(index, 0, order);
+    this.onEvent({ type: 'BOT_REMOVED', botId: bot.id });
+    this.#dispatch();
+    return { id: bot.id };
   }
 
   getState() {
     return {
       pending: this.#pending.map((order) => ({ ...order })),
       complete: this.#complete.map((order) => ({ ...order })),
-      bots: this.#bots.map((bot) => ({
-        id: bot.id,
-        status: bot.status,
-        orderNumber: bot.order?.number ?? null,
-      })),
+      bots: this.#bots.map((bot) => this.#publicBot(bot)),
+    };
+  }
+
+  shutdown() {
+    for (const bot of this.#bots) {
+      if (bot.timer !== null) {
+        this.clearTimeoutFn(bot.timer);
+        bot.timer = null;
+      }
+    }
+  }
+
+  #sortPending() {
+    this.#pending.sort((left, right) => {
+      const leftPriority = left.type === 'VIP' ? 0 : 1;
+      const rightPriority = right.type === 'VIP' ? 0 : 1;
+      return leftPriority - rightPriority || left.number - right.number;
+    });
+  }
+
+  #dispatch() {
+    for (const bot of this.#bots) {
+      if (bot.status !== 'IDLE' || this.#pending.length === 0) continue;
+      this.#startProcessing(bot, this.#pending.shift());
+    }
+  }
+
+  #startProcessing(bot, order) {
+    const processingOrder = { ...order, status: 'PROCESSING' };
+    bot.status = 'BUSY';
+    bot.order = processingOrder;
+    this.onEvent({
+      type: 'ORDER_STARTED',
+      order: { ...processingOrder },
+      botId: bot.id,
+    });
+
+    bot.timer = this.setTimeoutFn(() => {
+      if (!this.#bots.includes(bot) || bot.order?.number !== processingOrder.number) return;
+
+      const completedOrder = { ...processingOrder, status: 'COMPLETE' };
+      bot.timer = null;
+      bot.order = null;
+      bot.status = 'IDLE';
+      this.#complete.push(completedOrder);
+      this.onEvent({
+        type: 'ORDER_COMPLETED',
+        order: { ...completedOrder },
+        botId: bot.id,
+      });
+      this.#dispatch();
+    }, this.processTimeMs);
+  }
+
+  #publicBot(bot) {
+    return {
+      id: bot.id,
+      status: bot.status,
+      order: bot.order ? { ...bot.order } : null,
     };
   }
 }

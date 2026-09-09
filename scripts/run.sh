@@ -1,19 +1,20 @@
 #!/bin/bash
+set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
 
-# Run Script
-# This script should execute your CLI application and output results to result.txt
+cat <<'COMMANDS' | ORDER_PROCESS_MS=10000 node src/cli.js > scripts/result.txt
+normal
+vip
+normal
++bot
++bot
+wait 1000
+-bot
+status
+wait 9500
+status
+exit
+COMMANDS
 
-echo "Running CLI application..."
-
-# For Go projects:
-# ./order-controller > result.txt
-
-# For Node.js projects:
-# node index.js > result.txt
-# or npm start > result.txt
-
-# Temporary placeholder - remove this when you implement your CLI
-echo "Added 1 bot" > result.txt
-echo "status: bot: [1], order: []" >> result.txt
-
-echo "CLI application execution completed"
+cat scripts/result.txt

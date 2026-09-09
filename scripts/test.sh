@@ -1,5 +1,5 @@
 #!/bin/bash
 set -euo pipefail
-
-echo "Running unit tests..."
-npm test
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT_DIR"
+node --test
