@@ -37,6 +37,20 @@ export class OrderController {
     return bot.id;
   }
 
+  removeBot() {
+    const bot = this.#bots.pop();
+    if (!bot) return null;
+
+    if (bot.status === 'PROCESSING' && bot.order) {
+      if (bot.timerId !== null) this.#clearTimeoutFn(bot.timerId);
+      bot.order.status = 'PENDING';
+      this.#insertPending(bot.order);
+    }
+
+    this.#dispatchIdleBots();
+    return bot.id;
+  }
+
   #dispatchIdleBots() {
     for (const bot of this.#bots) {
       if (bot.status !== 'IDLE' || this.#pending.length === 0) continue;
