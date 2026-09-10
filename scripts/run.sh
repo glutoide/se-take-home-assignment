@@ -1,19 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Run Script
-# This script should execute your CLI application and output results to result.txt
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 
-echo "Running CLI application..."
+if [[ ! -f dist/cli.js ]]; then
+  echo "ERROR: dist/cli.js not found. Run scripts/build.sh first." >&2
+  exit 1
+fi
 
-# For Go projects:
-# ./order-controller > result.txt
-
-# For Node.js projects:
-# node index.js > result.txt
-# or npm start > result.txt
-
-# Temporary placeholder - remove this when you implement your CLI
-echo "Added 1 bot" > result.txt
-echo "status: bot: [1], order: []" >> result.txt
-
-echo "CLI application execution completed"
+rm -f scripts/result.txt
+node dist/cli.js --demo > scripts/result.txt
+cat scripts/result.txt

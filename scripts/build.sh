@@ -1,15 +1,15 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Build Script
-# This script should contain all compilation steps for your CLI application
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 
-echo "Building CLI application..."
+rm -rf dist
+mkdir -p dist
 
-# For Go projects:
-# go build -o order-controller ./cmd/main.go
+node --check src/order-controller.js
+node --check src/cli.js
+cp src/order-controller.js src/cli.js dist/
+chmod +x dist/cli.js
 
-# For Node.js projects:
-# npm install
-# npm run build (if needed)
-
-echo "Build completed"
+echo "Build complete: dist/cli.js"
