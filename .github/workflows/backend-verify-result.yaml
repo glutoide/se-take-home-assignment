@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   verify-result:
+    timeout-minutes: 15
     # Never execute code from an untrusted fork on the owner's home laptop.
     if: >-
       github.actor == 'glutoide' &&
@@ -51,17 +52,14 @@ jobs:
     - name: Verify npm version
       run: npm --version
 
-    - name: Make scripts executable
-      run: chmod +x scripts/test.sh scripts/build.sh scripts/run.sh
-      
     - name: Execute test script
-      run: ./scripts/test.sh
+      run: bash scripts/test.sh
       
     - name: Execute build script
-      run: ./scripts/build.sh
+      run: bash scripts/build.sh
       
     - name: Execute run script
-      run: ./scripts/run.sh
+      run: bash scripts/run.sh
       
     - name: Verify result.txt exists and is not empty
       run: |
